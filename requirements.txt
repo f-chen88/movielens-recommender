@@ -3,3 +3,5 @@ numpy
 scikit-learn
 scipy
 tqdm
+myfm>=0.3.6
+setuptools<81
