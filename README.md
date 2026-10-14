@@ -13,31 +13,26 @@ To test your code on our platform, you are required to update the *requirements.
 When your code will be test, we will execute: 
   > pip install -r requirements.txt
 
-## Our method: Bayesian SVD++ *flipped*, averaged over 8 MCMC chains
+## Our method: FWLS stacking of Bayesian SVD++ *flipped* with two complementary models
 
-Variant « flipped » of Rendle, Zhang & Koren (2019), *On the Difficulty of Evaluating Baselines: A Study on Recommender Systems* (arXiv:1905.01395), without the time term (the data has no timestamps).
+Final prediction = feature-weighted linear stacking (FWLS, Sill et al. 2009, *Feature-Weighted Linear Stacking*, arXiv:0911.0460) of three models:
 
-- **Model:** matrix factorization with biases. Each user is also described by the movies they rated, and each movie by the users who rated it (implicit feedback on both sides, normalised by |N|^-1/2).
-- **Learning:** Bayesian, by Gibbs sampling (MCMC), with the [myFM](https://myfm.readthedocs.io/) library. Regularisation strengths are sampled from the data, so there is no λ to tune. The predictions of 8 independent chains (seeds 0 to 7) are averaged.
-- **Hyperparameters:** rank 16 and 145 MCMC iterations per chain, chosen by 5-fold cross-validation on the train set with Optuna (30 trials). The number of chains (8) was chosen by grid search over {1, 2, 4, 8}.
-- **Cost:** about 95 s on `ratings_train.npy` and about 135 s on train + test (2 CPU cores), under 1 GB of memory.
-- **Tested** from an empty environment with Python 3.11 (myfm 0.4.0) and 3.12 (myfm 0.5.0). Both give the same output.
-- **Fallback:** if `myfm` cannot be imported, `generate.py` prints a warning and uses a bias model, so `output.npy` is always produced.
+1. **Bayesian SVD++ flipped** (Rendle, Zhang & Koren 2019, arXiv:1905.01395), Gaussian likelihood, 8 MCMC chains (rank 16, 145 iterations). This was our previous submission (platform RMSE 0.809).
+2. **The same model with an ordered-probit likelihood** (myFM `MyFMOrderedProbit`, 10 classes for 0.5 to 5 stars), 8 chains. It treats ratings as ordered categories instead of real numbers with uniform noise. The expected rating is computed from the posterior of the latent score and of the cutpoints (Gaussian approximation).
+3. **Item-based neighbourhood on the residuals of a bias model** (Koren 2010): shrunk Pearson similarity, k = 21. It captures local item-to-item effects that a rank-16 factorization smooths out.
 
-### Local results
+**Stacker.** The weight of each model depends on the cell, through 7 meta-features: constant, log number of ratings of the movie, log number of ratings of the user, user mean, user standard deviation, fraction of half-star ratings of the user, movie standard deviation. That gives 7 × 3 = 21 weights. They were learned by ridge regression on out-of-fold predictions (5 folds of the train set, ridge penalty chosen by nested cross-validation) and are hard-coded in `generate.py`. No information from the test set was used.
 
-Same protocol for every method:
-- 5-fold cross-validation on the train set (same folds for all methods), 30 Optuna trials per method;
-- then refit on the full train set and a single measurement on the test set.
+- **Cost:** about 290 s on `ratings_train.npy` and about 410 s on train + test (2 CPU cores), under 1 GB of memory.
+- **Lighter variant:** set `STACK = "reg+knn"` at the top of `generate.py` to drop the probit model. It is about twice as fast, with a test RMSE of 0.8482.
+- **Fallback:** if `myfm` cannot be imported, `generate.py` uses a bias model, so `output.npy` is always produced.
 
-| Method | RMSE validation (5 folds) | RMSE test |
-|---|---|---|
-| Neighbourhood (course) | 0.994 ± 0.009 | 1.006 |
-| Matrix factorization, gradient descent (course) | 0.905 ± 0.009 | 0.912 |
-| SVD++ (Koren 2008) | 0.871 ± 0.011 | 0.877 |
-| Bayesian matrix factorization | 0.864 ± 0.011 | 0.867 |
-| Bayesian SVD++ (paper) | 0.864 ± 0.010 | 0.867 |
-| Bayesian SVD++ flipped | 0.853 ± 0.011 | 0.856 |
-| Neighbourhood on bias residuals (Koren 2010) | 0.870 ± 0.009 | 0.875 |
-| **Bayesian SVD++ flipped, 8 chains (submitted)** | **0.848 ± 0.011** | **0.850** |
-| Blend 0.84 × previous + 0.16 × neighbourhood on residuals | 0.848 ± 0.011 | 0.849 |
+### Local results (train → test)
+
+| Method | RMSE test |
+|---|---|
+| Bayesian SVD++ flipped, 8 chains (previous submission) | 0.8501 |
+| Stacking reg + neighbourhood | 0.8482 |
+| **Stacking reg + probit + neighbourhood (submitted)** | **0.8473** |
+
+All methods use the same protocol: 5-fold cross-validation on the train set with the same folds for every method, then a single measurement on the test set.
