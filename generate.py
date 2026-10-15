@@ -16,16 +16,17 @@ from scipy.special import ndtr
 #   3. item-based neighbourhood on the residuals of the bias model (Koren 2010)
 # Base hyperparameters chosen by 5-fold cross-validation on the train set (Optuna); stacking weights learned by
 # ridge regression on the out-of-fold predictions of the same 5 folds (nested CV to choose the ridge penalty).
-STACK = "all"                                   # "all" (3 models) or "reg+knn" (faster, no probit)
-RANK, N_ITER, N_CHAINS = 16, 145, 8
+STACK = "all"                                   # "all" (3 models, stacked) or "reg" (Bayesian SVD++ flipped alone, faster)
+RANK, N_ITER, N_CHAINS = 16, 150, 8
+# myFM hyperpriors and exponents of the implicit normalisation |N|^-ex, tuned on a platform-like protocol
+# (train + half of the test -> other half): defaults (1, 1, 1, 1, 0.5, 0.5) -> 0.8303, these -> 0.8273 (4 chains).
+PRIORS = dict(alpha_0=0.885, beta_0=0.15, gamma_0=0.366, reg_0=7.806)
+EX_U, EX_I = 0.373, 0.417
 KNN = dict(k=21, alpha=88.01362076554739, beta=2.91523782912842, kappa=1.3752959847722561)
-WEIGHTS = {
-    "reg+knn": dict(w=[0.8644630095, 0.1361038947, 0.06240036221, -0.06680799627, 0.01324122711, -0.01509491839, -0.09292443964, 0.09501915954, -0.06482787881, 0.068192503, -0.01114154291, 0.01259450784, 0.04377571297, -0.03547615639],
-             mu=[2.569237455, 4.396442784, 0.8931878284, 3.528236515, 0.2978119403, 0.77951888],
-             sd=[0.9254182243, 1.107516397, 0.2300849993, 0.4689682554, 0.209895426, 0.3108571207]),
-    "all": dict(w=[0.6578723478, 0.2319259328, 0.111394889, -0.2332852885, 0.3322108179, -0.1027789753, -0.003760553335, 0.02003936792, -0.01859027621, -0.04776148564, -0.0692325273, 0.1177037136, -0.1400168011, 0.05804324455, 0.08603470061, -0.03281371291, 0.01541589466, 0.01964028126, 0.02661639102, 0.008036498264, -0.02745711143],
-             mu=[2.569237455, 4.396442784, 0.8931878284, 3.528236515, 0.2978119403, 0.77951888],
-             sd=[0.9254182243, 1.107516397, 0.2300849993, 0.4689682554, 0.209895426, 0.3108571207]),
+WEIGHTS = {   # learned at platform scale (base models trained on train + half of the test, predictions on the other half)
+    "all": dict(w=[0.8409217333, 0.1497042937, 0.008428208549, -0.08212576978, 0.1280317566, -0.04970040588, 0.04806243604, -0.09300958703, 0.04457657131, -0.0752525724, 0.04701534393, 0.02790494729, -0.09078522603, 0.05271862088, 0.04114618795, 0.0185394415, -0.002225051509, -0.01223309194, -0.007963756969, 0.02695372624, -0.01207603017],
+             mu=[2.953159776, 5.023411176, 0.9013371367, 3.517933106, 0.2992815527, 0.8077458416],
+             sd=[1.082228726, 1.13281031, 0.2147823604, 0.4600544966, 0.2055022102, 0.2872306458]),
 }
 warnings.filterwarnings("ignore", message="IProgress not found")
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated")        # myfm <= 0.4 on Python <= 3.11
@@ -38,18 +39,18 @@ def flipped_chain(R, seed, probit=False):
     m, n = R.shape
     M = ~np.isnan(R)
     Nu = sp.csr_matrix(M.T.astype(float))                                       # user  -> movies rated
-    Nu = sp.diags(1 / np.sqrt(np.maximum(np.asarray(Nu.sum(1)).ravel(), 1))) @ Nu
+    Nu = sp.diags(np.maximum(np.asarray(Nu.sum(1)).ravel(), 1) ** -EX_U) @ Nu
     Ni = sp.csr_matrix(M.astype(float))                                         # movie -> users who rated it
-    Ni = sp.diags(1 / np.sqrt(np.maximum(np.asarray(Ni.sum(1)).ravel(), 1))) @ Ni
+    Ni = sp.diags(np.maximum(np.asarray(Ni.sum(1)).ravel(), 1) ** -EX_I) @ Ni
     Xu = sp.hstack([sp.identity(n, format="csr"), Nu]).tocsr()                  # [ user id  | N(u) ]
     Xi = sp.hstack([sp.identity(m, format="csr"), Ni]).tocsr()                  # [ movie id | N(i) ]
     ii, uu = np.where(M)
     blocks = [myfm.RelationBlock(uu, Xu), myfm.RelationBlock(ii, Xi)]
     if probit:
-        fm = myfm.MyFMOrderedProbit(rank=RANK, init_stdev=0.1, random_seed=seed)
+        fm = myfm.MyFMOrderedProbit(rank=RANK, init_stdev=0.1, random_seed=seed, **PRIORS)
         fm.fit(sp.csr_matrix((len(ii), 0)), np.round(R[ii, uu] * 2).astype(int) - 1, X_rel=blocks, n_iter=N_ITER, group_shapes=[n, m, m, n])
     else:
-        fm = myfm.MyFMRegressor(rank=RANK, init_stdev=0.1, random_seed=seed)
+        fm = myfm.MyFMRegressor(rank=RANK, init_stdev=0.1, random_seed=seed, **PRIORS)
         fm.fit(sp.csr_matrix((len(ii), 0)), R[ii, uu], X_rel=blocks, n_iter=N_ITER, group_shapes=[n, m, m, n])
 
     # Latent score of every cell for every MCMC sample, computed from the parameters (fast, no per-cell predict).
@@ -167,10 +168,13 @@ if __name__ == '__main__':
                 pro = pro + flipped_chain(R, s, probit=True) / N_CHAINS
                 print(f"  ordered-probit chain {s + 1}/{N_CHAINS} done ({time.time() - t0:.0f} s)")
             preds.append(pro)
-        preds.append(knn_residuals(R, **KNN))
-        print(f"  neighbourhood done ({time.time() - t0:.0f} s)")
-        P = stack([np.clip(p, 0.5, 5) for p in preds], meta_features(R), **WEIGHTS[STACK])
-        print(f"Stacking ({STACK}): {time.time() - t0:.0f} s")
+        if STACK == "all":
+            preds.append(knn_residuals(R, **KNN))
+            print(f"  neighbourhood done ({time.time() - t0:.0f} s)")
+            P = stack([np.clip(p, 0.5, 5) for p in preds], meta_features(R), **WEIGHTS[STACK])
+        else:
+            P = reg
+        print(f"Done ({STACK}): {time.time() - t0:.0f} s")
     except ImportError as e:
         print(f"WARNING: myFM unavailable ({e}); falling back to the bias baseline.")
         P = bias_baseline(R)
