@@ -13,32 +13,32 @@ To test your code on our platform, you are required to update the *requirements.
 When your code will be test, we will execute: 
   > pip install -r requirements.txt
 
-## Our method: FWLS stacking of Bayesian SVD++ *flipped* with two complementary models
+## Our method: Bayesian SVD++ *flipped* with movie side information, averaged over 8 MCMC chains
 
-Final prediction = feature-weighted linear stacking (FWLS, Sill et al. 2009, *Feature-Weighted Linear Stacking*, arXiv:0911.0460) of three models:
+Variant « flipped » of Rendle, Zhang & Koren (2019), *On the Difficulty of Evaluating Baselines: A Study on Recommender Systems* (arXiv:1905.01395). It is a factorization machine (Rendle 2010) learned by Gibbs sampling with [myFM](https://myfm.readthedocs.io/):
 
-1. **Bayesian SVD++ flipped** (Rendle, Zhang & Koren 2019, arXiv:1905.01395), Gaussian likelihood, 8 MCMC chains (rank 16, 145 iterations). This was our previous submission (platform RMSE 0.809).
-2. **The same model with an ordered-probit likelihood** (myFM `MyFMOrderedProbit`, 10 classes for 0.5 to 5 stars), 8 chains. It treats ratings as ordered categories instead of real numbers with uniform noise. The expected rating is computed from the posterior of the latent score and of the cutpoints (Gaussian approximation).
-3. **Item-based neighbourhood on the residuals of a bias model** (Koren 2010): shrunk Pearson similarity, k = 21. It captures local item-to-item effects that a rank-16 factorization smooths out.
+- **user** = [user id | movies rated by the user, normalised by |N(u)|^-0.51]
+- **movie** = [movie id | users who rated the movie, normalised by |N(i)|^-0.50 | genres (one-hot, norm 1) | release period (5-year bins)]
 
-**Hyperparameters at platform scale.** The platform trains on more data than our local train (0.809 on the platform vs 0.850 locally for the same model). We therefore re-tuned on a platform-like protocol: train on `ratings_train` + one half of `ratings_test` (1.5x the data), measure on the other half, then swap the halves. Every candidate was validated with 4 averaged chains on seeds not used during the search.
-- Rank, number of iterations, burn-in and initialisation: the previous values (rank 16, about 150 iterations, no burn-in, init 0.1) are already on the plateau. Wider ranges (rank 4–48, 100–500 iterations) give nothing better.
-- myFM hyperpriors (`alpha_0, beta_0, gamma_0, reg_0`), left at 1 until now, and the exponent of the implicit normalisation |N|^-ex (Koren uses 1/2): `alpha_0=0.885, beta_0=0.15, gamma_0=0.366, reg_0=7.806`, `ex_u=0.373, ex_i=0.417`. Gaussian model: 0.8303 → 0.8273; ordered probit: 0.8323 → 0.8305. The priors give about 2/3 of the gain, the exponents 1/3.
-- Neighbourhood: k = 21, shrinkage 88 kept, because the better kNN found (alone 0.8627 → 0.8595) does not improve the stack.
+The prediction is the sum of all linear terms and all pairwise interactions between these features, averaged over the posterior samples of 8 independent chains (seeds 0 to 7). Genres and release period mostly help movies with few ratings: the median movie has 3 ratings in the train set.
 
-**Stacker.** The weight of each model depends on the cell, through 7 meta-features: constant, log number of ratings of the movie, log number of ratings of the user, user mean, user standard deviation, fraction of half-star ratings of the user, movie standard deviation. That gives 7 × 3 = 21 weights. They were learned by ridge regression on the predictions of the platform-like protocol (base models trained on train + one half of the test, predictions on the other half; ridge penalty chosen by 5-fold cross-validation), and are hard-coded in `generate.py`.
+- **Data:** genres and titles come from `namesngenre2.npy`, the corrected metadata file. `generate.py` looks for it in the working directory, next to `generate.py`, and next to the ratings file. If it is not found, it prints a warning and runs the same model without side information (rank 16, tuned priors).
+- **Hyperparameters:** rank 42, 150 iterations, myFM hyperpriors `alpha_0=0.25, beta_0=0.016, gamma_0=0.416, reg_0=0.461`.
+  - **Platform-like protocol:** the platform trains on more data than our local train, so we tuned on `ratings_train` + one half of `ratings_test` (1.5x the data), measured on the other half, then swapped the halves.
+  - **Search:** Optuna, each trial = mean of 2 chains.
+  - **Validation:** the selected configuration was validated with 4 averaged chains on seeds not used during the search.
+- **Cost:** about 225 s on `ratings_train.npy` and about 290 s on train + test (2 CPU cores), about 1.3 GB of memory.
+- **Tested** with Python 3.11 (myfm 0.4.0) and 3.12 (myfm 0.5.0).
 
-- **Cost:** about 290 s on `ratings_train.npy` and about 410 s on train + test (2 CPU cores), under 1 GB of memory.
-- **Lighter variant:** set `STACK = "reg"` at the top of `generate.py` to keep only the Bayesian SVD++ flipped (8 chains). It is about 2.5 times faster (about 130 s).
-- **Fallback:** if `myfm` cannot be imported, `generate.py` uses a bias model, so `output.npy` is always produced.
-
-### Local results (train → test)
+### Results
 
 | Method | Local test (train → test) | Platform-like protocol (4 chains) | Platform |
 |---|---|---|---|
 | Bayesian SVD++ flipped, default priors | 0.8501 | 0.8303 | 0.809 |
-| Stacking, default priors | 0.8473 | 0.8280 | 0.807 |
-| Bayesian SVD++ flipped, tuned priors (`STACK = "reg"`) | 0.8492 | 0.8273 | |
-| **Stacking, tuned priors (submitted)** | **0.8472** | **0.8269** | |
+| Stacking (flipped + ordered probit + kNN), default priors | 0.8473 | 0.8280 | 0.807 |
+| Stacking, tuned priors | 0.8472 | 0.8269 | 0.805 |
+| + genres, rank 16 | | 0.8157 | |
+| + genres + release period, rank 16 | | 0.8091 | |
+| **+ genres + release period (5-year bins), rank 42 (submitted)** | **0.8242** | **0.8076** | |
 
-All methods use the same protocol: 5-fold cross-validation on the train set with the same folds for every method, then a single measurement on the test set.
+With the side information, stacking with the ordered-probit model and the neighbourhood model no longer helps much (0.8076 → 0.8072), so we went back to a single model.
