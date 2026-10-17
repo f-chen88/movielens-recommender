@@ -30,6 +30,12 @@ The prediction is the sum of all linear terms and all pairwise interactions betw
 - **Cost:** about 225 s on `ratings_train.npy` and about 290 s on train + test (2 CPU cores), about 1.3 GB of memory.
 - **Tested** with Python 3.11 (myfm 0.4.0) and 3.12 (myfm 0.5.0).
 
+### Data included in this repository
+
+`namesngenre2.npy` (movie titles and genres, row j = column j of the ratings matrices) is included next to `generate.py`, because it does not seem to be available when the platform runs the code. It is derived from **MovieLens Latest Small** (GroupLens, September 2018) and redistributed under the same license conditions; see `MovieLens-README.txt`. It contains no ratings. The ratings matrices are not included.
+
+> F. Maxwell Harper and Joseph A. Konstan. 2015. The MovieLens Datasets: History and Context. *ACM Transactions on Interactive Intelligent Systems (TiiS)* 5, 4: 19:1–19:19. https://doi.org/10.1145/2827872
+
 ### Results
 
 | Method | Local test (train → test) | Platform-like protocol (4 chains) | Platform |
