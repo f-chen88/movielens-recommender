@@ -13,30 +13,68 @@ import scipy.sparse as sp
 #   user  = [ user id  | movies rated by the user  (|N(u)|^-ex_u) ]
 #   movie = [ movie id | users who rated the movie (|N(i)|^-ex_i) | genres | release period (5-year bins) ]
 # Hyperparameters tuned on a platform-like protocol: train + one half of the test -> RMSE on the other half, and swap.
-# If namesngenre2.npy cannot be found, the model runs without side information (previous tuned configuration).
+# namesngenre2.npy is searched for everywhere; if it cannot be found, the script stops with a diagnostic error (no fallback).
 N_CHAINS, N_ITER = 8, 150
-WITH_META = dict(rank=42, alpha_0=0.25, beta_0=0.016, gamma_0=0.416, reg_0=0.461, ex_u=0.507, ex_i=0.498)
-NO_META = dict(rank=16, alpha_0=0.885, beta_0=0.15, gamma_0=0.366, reg_0=7.806, ex_u=0.373, ex_i=0.417)
+CFG = dict(rank=42, alpha_0=0.25, beta_0=0.016, gamma_0=0.416, reg_0=0.461, ex_u=0.507, ex_i=0.498)
 META_FILE = "namesngenre2.npy"
 warnings.filterwarnings("ignore", message="IProgress not found")
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated")        # myfm <= 0.4 on Python <= 3.11
 
 
-def load_side(n_movies, ratings_path):
-    """Movie side features (genres one-hot, normalised to norm 1, and 5-year release periods), or None if unavailable."""
+SKIP = {"/proc", "/sys", "/dev", "/run", "/snap", "/boot", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/var/lib", "/var/cache"}
+
+
+def find_meta(ratings_path, max_depth=6, time_budget=60):
+    """Look for META_FILE everywhere reasonable; raise an error with a full diagnostic if it is not found."""
     here = os.path.dirname(os.path.abspath(__file__))
-    for d in (os.getcwd(), here, os.path.dirname(os.path.abspath(ratings_path))):
-        p = os.path.join(d, META_FILE)
-        if os.path.exists(p):
-            try:
-                N = np.load(p)
-                if N.shape == (n_movies, 2):
-                    break
-                print(f"WARNING: {p} has shape {N.shape}, expected ({n_movies}, 2); ignored.")
-            except Exception as e:
-                print(f"WARNING: cannot read {p} ({e}); ignored.")
-    else:
-        return None, []
+    cwd = os.getcwd()
+    rdir = os.path.dirname(os.path.abspath(ratings_path))
+    print(f"[meta] cwd={cwd} | script dir={here} | ratings={os.path.abspath(ratings_path)}")
+    # 1. obvious places, then their parents
+    direct = []
+    for d in (cwd, here, rdir):
+        while True:
+            for sub in ("", "data", "datasets", "dataset", "Data", "datalab-a1"):
+                direct.append(os.path.join(d, sub, META_FILE))
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+    for p in dict.fromkeys(direct):
+        if os.path.isfile(p):
+            return p
+    # 2. walk the file system (bounded in depth and time)
+    roots = list(dict.fromkeys([cwd, here, rdir, os.path.expanduser("~"), "/data", "/mnt", "/opt", "/srv", "/tmp", "/home", "/workspace", "/app", "/"]))
+    seen_npy, t0 = [], time.time()
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        base = root.rstrip(os.sep).count(os.sep)
+        for d, dirs, files in os.walk(root):
+            if time.time() - t0 > time_budget:
+                break
+            dirs[:] = [x for x in dirs if os.path.join(d, x) not in SKIP and not x.startswith(".")
+                       and x not in ("site-packages", "dist-packages", "node_modules", "__pycache__")
+                       and d.rstrip(os.sep).count(os.sep) - base < max_depth]
+            if META_FILE in files:
+                return os.path.join(d, META_FILE)
+            seen_npy += [os.path.join(d, f) for f in files if f.endswith(".npy")]
+    seen_npy = list(dict.fromkeys(seen_npy))
+    like = [p for p in seen_npy if os.path.basename(p).lower().startswith("namesngenre")]
+    listing = sorted(os.listdir(cwd))
+    # Short and most informative first: the platform displays "execution: <Error>: <message>".
+    raise FileNotFoundError(
+        f"{META_FILE} not found | cwd={cwd} | cwd files={listing[:15]} | namesngenre* found={like[:5]} | "
+        f"{len(seen_npy)} .npy seen, e.g. {[os.path.basename(p) for p in seen_npy[:8]]} | "
+        f"ratings={os.path.abspath(ratings_path)} | script={here}")
+
+
+def load_side(n_movies, ratings_path):
+    """Movie side features: genres (one-hot, normalised to norm 1) and 5-year release periods."""
+    p = find_meta(ratings_path)
+    N = np.load(p)
+    if N.shape != (n_movies, 2):
+        raise ValueError(f"{p} has shape {N.shape}, expected ({n_movies}, 2)")
     genres = sorted({g for s in N[:, 1] for g in str(s).split("|")})
     G = np.array([[g in str(s).split("|") for g in genres] for s in N[:, 1]], float)
     G /= np.sqrt(np.maximum(G.sum(1, keepdims=True), 1))
@@ -77,14 +115,6 @@ def flipped_chain(R, seed, cfg, side=None, side_shapes=()):
     return S / len(fm.w0_samples)
 
 
-def bias_baseline(R, beta=3.0):
-    """Fallback, only used if myFM cannot be imported: global mean + regularised movie and user biases."""
-    M = ~np.isnan(R); Z = np.where(M, R, 0.0); mu = Z.sum() / M.sum()
-    b_i = ((Z - mu) * M).sum(1) / (beta + M.sum(1))
-    b_u = ((Z - mu - b_i[:, None]) * M).sum(0) / (beta + M.sum(0))
-    return mu + b_i[:, None] + b_u[None, :]
-
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Generate a completed ratings table.')
     parser.add_argument("--name", type=str, default="ratings_train.npy",
@@ -103,19 +133,11 @@ if __name__ == '__main__':
     # Any method you want
     t0 = time.time()
     R = table.T.astype(float)                                                   # movies x users, NaN = missing
-    try:
-        import myfm  # noqa: F401
-        side, shapes = load_side(R.shape[0], args.name)
-        cfg = WITH_META if side is not None else NO_META
-        if side is None:
-            print(f"WARNING: {META_FILE} not found; running without side information.")
-        P = 0
-        for s in range(N_CHAINS):
-            P = P + flipped_chain(R, s, cfg, side, shapes) / N_CHAINS
-            print(f"  chain {s + 1}/{N_CHAINS} done ({time.time() - t0:.0f} s)")
-    except ImportError as e:
-        print(f"WARNING: myFM unavailable ({e}); falling back to the bias baseline.")
-        P = bias_baseline(R)
+    side, shapes = load_side(R.shape[0], args.name)                            # no fallback: fails loudly if missing
+    P = 0
+    for s in range(N_CHAINS):
+        P = P + flipped_chain(R, s, CFG, side, shapes) / N_CHAINS
+        print(f"  chain {s + 1}/{N_CHAINS} done ({time.time() - t0:.0f} s)")
     table = np.clip(P, 0.5, 5).T                                                # users x movies, every cell filled
     assert np.isfinite(table).all()
 

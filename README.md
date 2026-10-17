@@ -22,7 +22,7 @@ Variant « flipped » of Rendle, Zhang & Koren (2019), *On the Difficulty of Eva
 
 The prediction is the sum of all linear terms and all pairwise interactions between these features, averaged over the posterior samples of 8 independent chains (seeds 0 to 7). Genres and release period mostly help movies with few ratings: the median movie has 3 ratings in the train set.
 
-- **Data:** genres and titles come from `namesngenre2.npy`, the corrected metadata file. `generate.py` looks for it in the working directory, next to `generate.py`, and next to the ratings file. If it is not found, it prints a warning and runs the same model without side information (rank 16, tuned priors).
+- **Data:** genres and titles come from `namesngenre2.npy`, the corrected metadata file. `generate.py` looks for it in the working directory, next to `generate.py`, next to the ratings file, in their parent folders and in `data/` or `datasets/` subfolders, then walks the file system, bounded in depth and time. If the file is not found, the script stops with a `FileNotFoundError`. There is no fallback: the error lists the folders searched and the `.npy` files seen.
 - **Hyperparameters:** rank 42, 150 iterations, myFM hyperpriors `alpha_0=0.25, beta_0=0.016, gamma_0=0.416, reg_0=0.461`.
   - **Platform-like protocol:** the platform trains on more data than our local train, so we tuned on `ratings_train` + one half of `ratings_test` (1.5x the data), measured on the other half, then swapped the halves.
   - **Search:** Optuna, each trial = mean of 2 chains.
