@@ -11,11 +11,11 @@ import scipy.sparse as sp
 
 # Bayesian SVD++ "flipped" (Rendle, Zhang & Koren 2019) with movie side information, averaged over 8 MCMC chains (myFM).
 #   user  = [ user id  | movies rated by the user  (|N(u)|^-ex_u) ]
-#   movie = [ movie id | users who rated the movie (|N(i)|^-ex_i) | genres ]  (ablation C: no release period)
+#   movie = [ movie id | users who rated the movie (|N(i)|^-ex_i) | genres | release period (5-year bins) ]
 # Hyperparameters tuned on a platform-like protocol: train + one half of the test -> RMSE on the other half, and swap.
 # namesngenre2.npy is searched for everywhere; if it cannot be found, the script stops with a diagnostic error (no fallback).
 N_CHAINS, N_ITER = 8, 150
-CFG = dict(rank=16, alpha_0=0.885, beta_0=0.15, gamma_0=0.366, reg_0=7.806, ex_u=0.373, ex_i=0.417)   # ablation C: priors of B, genres only
+CFG = dict(rank=42, alpha_0=0.25, beta_0=0.016, gamma_0=0.416, reg_0=0.461, ex_u=0.507, ex_i=0.498)
 META_FILE = "namesngenre2.npy"
 warnings.filterwarnings("ignore", message="IProgress not found")
 warnings.filterwarnings("ignore", message="pkg_resources is deprecated")        # myfm <= 0.4 on Python <= 3.11
@@ -83,7 +83,7 @@ def load_side(n_movies, ratings_path):
     bins = list(range(1950, 2020, 5))
     Y = np.eye(len(bins) + 1)[np.digitize(year, bins)]
     print(f"Side information loaded from {p}: {G.shape[1]} genres, {Y.shape[1]} release periods.")
-    return sp.csr_matrix(G), [G.shape[1]]
+    return sp.csr_matrix(np.hstack([G, Y])), [G.shape[1], Y.shape[1]]
 
 
 def flipped_chain(R, seed, cfg, side=None, side_shapes=()):
