@@ -29,16 +29,20 @@ python3 generate.py --name ratings_train.npy
 
 ## Model
 
-Flipped Bayesian SVD++ (Rendle, Zhang & Koren, 2019, *On the Difficulty of Evaluating Baselines*, arXiv:1905.01395), written as a factorization machine (Rendle, 2010) and learned by Gibbs sampling with [myFM](https://myfm.readthedocs.io/). Each rating (i, u) becomes one sparse row of features:
+Flipped Bayesian SVD++ (Rendle, Zhang & Koren, 2019, *On the Difficulty of Evaluating Baselines*, arXiv:1905.01395), written as a factorization machine (Rendle, 2010) and learned by Gibbs sampling with [myFM](https://myfm.readthedocs.io/). Each rating $(i, u)$ becomes one sparse row of features:
 
-- **user block** = [user id | movies rated by the user, normalized by |N(u)|^-0.507]
-- **movie block** = [movie id | users who rated the movie, normalized by |N(i)|^-0.498 | genres (normalized to norm 1) | release period (5-year bins, year parsed from the title)]
+- **user block** = [user id | movies rated by the user, normalized by $|N(u)|^{-0.507}$]
+- **movie block** = [movie id | users who rated the movie, normalized by $|N(i)|^{-0.498}$ | genres (normalized to norm 1) | release period (5-year bins, year parsed from the title)]
 
-For one parameter set θ, the prediction is
+For one parameter set $\theta$, the prediction for the row $x_{iu}$ is
 
-ŷ_θ(x_iu) = w0 + b_u + b_i + ⟨P_u, Q_i⟩ + h_u + h_i,
+$$\widehat y_\theta(x_{iu}) = w_0 + b_u + b_i + \langle P_u, Q_i\rangle + h_u + h_i,$$
 
-where P_u and Q_i sum the embeddings of the active columns of each block (the SVD++ flipped terms, plus the genre and period embeddings in Q_i). The final prediction averages ŷ over 8 independent chains × 150 draws (seeds 0 to 7) and is clipped to [0.5, 5]. Genres and release period mostly help movies with few ratings: the median movie has 3 ratings in the train set.
+where $P_u$ and $Q_i$ sum the embeddings of the active columns of each block (the SVD++ flipped terms, plus the genre and period embeddings in $Q_i$), and $h_u$, $h_i$ are the interactions inside each block. The final prediction averages over 8 independent chains × 150 draws (seeds 0 to 7) and is clipped to the rating scale:
+
+$$\widehat R_{iu} = \mathrm{clip}_{[0.5,\,5]}\left(\frac{1}{8}\sum_{c=1}^{8}\frac{1}{150}\sum_{t=1}^{150}\widehat y_{\theta^{(c,t)}}(x_{iu})\right).$$
+
+Genres and release period mostly help movies with few ratings: the median movie has 3 ratings in the train set.
 
 - **Hyperparameters:** rank 42, 150 iterations, no burn-in, myFM hyperpriors `alpha_0=0.25, beta_0=0.016, gamma_0=0.416, reg_0=0.461`.
 - **Cost:** about 300 s on the platform (train + test as input), about 1.3 GB of memory.
@@ -48,7 +52,7 @@ where P_u and Q_i sum the embeddings of the active columns of each block (the SV
 ## Evaluation protocols
 
 - **Protocol 1 (comparing methods):** 5 folds of the train set shared by all methods (one rating per movie and per user always kept for training); Optuna, 30 trials per method; the best setting is refitted on the full train set and evaluated once on the test set.
-- **Protocol 2 (tuning at platform scale):** the platform trains on train + test, twice our training set. The test set is split into two halves H1, H2; each setting is trained on train + H1 and scored on H2, then the reverse. Optuna trials average 2 chains (seeds 0–1); selected settings are verified with 4 new chains (seeds 2–5).
+- **Protocol 2 (tuning at platform scale):** the platform trains on train + test, twice our training set. The test set is split into two halves $H_1$, $H_2$; each setting is trained on train + $H_1$ and scored on $H_2$, then the reverse. Optuna trials average 2 chains (seeds 0–1); selected settings are verified with 4 new chains (seeds 2–5).
 - **Platform:** hidden eval set, never used for tuning.
 
 ## Results
